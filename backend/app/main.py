@@ -25,3 +25,11 @@ app.include_router(listings_router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+def root():
+    return {"status": "FlipFinder is running"}
