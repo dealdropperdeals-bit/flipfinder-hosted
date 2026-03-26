@@ -1,8 +1,8 @@
 from datetime import datetime
-import json
 import re
 
 import requests
+from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -22,13 +22,32 @@ def extract_year(text: str) -> int | None:
     return None
 
 
+def clean_price(price_text: str) -> int | None:
+    if not price_text:
+        return None
+    match = re.search(r"[\d,]+", price_text)
+    if not match:
+        return None
+    try:
+        return int(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+
+
 @router.post("")
 def run_scan(
     max_price: int = Query(default=6000, ge=1, le=50000),
     limit: int = Query(default=25, ge=1, le=100),
+    query: str = Query(default="used cars"),
     db: Session = Depends(get_db),
 ):
-    url = f"https://orlando.craigslist.org/search/cta?sort=date&max_price={max_price}"
+    url = "https://www.ebay.com/sch/i.html"
+
+    params = {
+        "_nkw": query,
+        "_udhi": max_price,
+        "LH_BIN": "1",
+    }
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
@@ -38,97 +57,40 @@ def run_scan(
     }
 
     try:
-        res = requests.get(url, headers=headers, timeout=20)
+        res = requests.get(url, params=params, headers=headers, timeout=20)
+        res.raise_for_status()
     except requests.RequestException as e:
         return {
             "created": 0,
             "checked": 0,
             "skipped_existing": 0,
             "skipped_invalid": 0,
-            "source": "craigslist",
+            "source": "ebay",
+            "query": query,
             "max_price": max_price,
             "limit": limit,
-            "scan_url": url,
             "error": f"Request failed: {str(e)}",
         }
 
     html = res.text
+    soup = BeautifulSoup(html, "html.parser")
 
-    if "captcha" in html.lower() or "blocked" in html.lower():
+    rows = soup.select("li.s-item")
+
+    if not rows:
         return {
             "created": 0,
             "checked": 0,
             "skipped_existing": 0,
             "skipped_invalid": 0,
-            "source": "craigslist",
+            "source": "ebay",
+            "query": query,
             "max_price": max_price,
             "limit": limit,
-            "scan_url": url,
-            "error": "Blocked or captcha detected",
+            "error": "No rows found",
             "status_code": res.status_code,
             "html_length": len(html),
             "html_preview": html[:1000],
-        }
-
-    start = html.find('id="ld_searchpage_data"')
-    if start == -1:
-        return {
-            "created": 0,
-            "checked": 0,
-            "skipped_existing": 0,
-            "skipped_invalid": 0,
-            "source": "craigslist",
-            "max_price": max_price,
-            "limit": limit,
-            "scan_url": url,
-            "error": "JSON data not found",
-            "status_code": res.status_code,
-            "html_length": len(html),
-            "html_preview": html[:1000],
-        }
-
-    script_start = html.find(">", start) + 1
-    script_end = html.find("</script>", script_start)
-    json_text = html[script_start:script_end].strip()
-
-    try:
-        data = json.loads(json_text)
-    except Exception as e:
-        return {
-            "created": 0,
-            "checked": 0,
-            "skipped_existing": 0,
-            "skipped_invalid": 0,
-            "source": "craigslist",
-            "max_price": max_price,
-            "limit": limit,
-            "scan_url": url,
-            "error": f"JSON parse failed: {str(e)}",
-            "status_code": res.status_code,
-            "json_preview": json_text[:500],
-        }
-
-    raw_items = data.get("itemListElement", [])
-
-    items = []
-    for entry in raw_items:
-        item = entry.get("item")
-        if isinstance(item, dict) and item.get("url") and item.get("name"):
-            items.append(item)
-
-    if not items:
-        return {
-            "created": 0,
-            "checked": 0,
-            "skipped_existing": 0,
-            "skipped_invalid": 0,
-            "source": "craigslist",
-            "max_price": max_price,
-            "limit": limit,
-            "scan_url": url,
-            "error": "No items in JSON",
-            "status_code": res.status_code,
-            "json_preview": json_text[:500],
         }
 
     created = 0
@@ -136,34 +98,41 @@ def run_scan(
     skipped_existing = 0
     skipped_invalid = 0
 
-    for listing_data in items[:limit]:
+    for row in rows[:limit]:
         checked += 1
 
-        title = listing_data.get("name", "")
-        link = listing_data.get("url", "")
+        title_el = row.select_one(".s-item__title")
+        link_el = row.select_one(".s-item__link")
+        price_el = row.select_one(".s-item__price")
+        image_el = row.select_one(".s-item__image-img")
 
-        offers = listing_data.get("offers", {})
-        price = offers.get("price") if isinstance(offers, dict) else None
-
-        if not title or not link or price is None:
+        if not title_el or not link_el or not price_el:
             skipped_invalid += 1
             continue
 
-        try:
-            price = int(float(price))
-        except (ValueError, TypeError):
+        title = title_el.get_text(strip=True)
+        link = link_el.get("href", "").strip()
+        price = clean_price(price_el.get_text(strip=True))
+
+        if (
+            not title
+            or not link
+            or not price
+            or title.lower() == "shop on ebay"
+        ):
             skipped_invalid += 1
             continue
 
         year = extract_year(title)
+        image_url = image_el.get("src") if image_el else None
 
         payload = {
             "title": title,
             "description": "",
             "price": price,
             "year": year or 0,
-            "seller_name": "",
-            "location": "Orlando, FL",
+            "seller_name": "eBay Seller",
+            "location": "",
         }
 
         junk_score, junk_flags = score_listing(payload)
@@ -172,7 +141,7 @@ def run_scan(
 
         exists = (
             db.query(Listing)
-            .filter_by(source="craigslist", source_id=source_id)
+            .filter_by(source="ebay", source_id=source_id)
             .first()
         )
         if exists:
@@ -182,16 +151,16 @@ def run_scan(
         now = datetime.utcnow()
 
         listing = Listing(
-            source="craigslist",
+            source="ebay",
             source_id=source_id,
             url=link,
             title=title,
             description="",
             price=price,
-            location="Orlando, FL",
-            seller_name="",
-            image_url=None,
-            thumb_url=None,
+            location="",
+            seller_name="eBay Seller",
+            image_url=image_url,
+            thumb_url=image_url,
             year=year,
             mileage=None,
             created_at=now,
@@ -212,11 +181,10 @@ def run_scan(
         "checked": checked,
         "skipped_existing": skipped_existing,
         "skipped_invalid": skipped_invalid,
-        "source": "craigslist",
+        "source": "ebay",
+        "query": query,
         "max_price": max_price,
         "limit": limit,
-        "scan_url": url,
         "status_code": res.status_code,
         "html_length": len(html),
-        "parsed_items": len(items),
     }
