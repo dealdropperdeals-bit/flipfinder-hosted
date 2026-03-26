@@ -1,0 +1,5 @@
+https://github.com/dealdropperdeals-bit/flipfinder-hosted.git
+
+
+git remote set-url origin https://github.com/dealdropperdeals-bit/flipfinder-hosted.git
+git remote -v
