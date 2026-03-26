@@ -1,8 +1,8 @@
 from datetime import datetime
+import json
 import re
 
 import requests
-from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -70,13 +70,8 @@ def run_scan(
             "html_preview": html[:1000],
         }
 
-    soup = BeautifulSoup(html, "html.parser")
-
-    rows = soup.select("li.result-row")
-    if not rows:
-        rows = soup.select("li.cl-search-result")
-
-    if not rows:
+    start = html.find('id="ld_searchpage_data"')
+    if start == -1:
         return {
             "created": 0,
             "checked": 0,
@@ -86,10 +81,47 @@ def run_scan(
             "max_price": max_price,
             "limit": limit,
             "scan_url": url,
-            "error": "No rows found",
+            "error": "JSON data not found",
             "status_code": res.status_code,
             "html_length": len(html),
             "html_preview": html[:1000],
+        }
+
+    script_start = html.find(">", start) + 1
+    script_end = html.find("</script>", script_start)
+    json_text = html[script_start:script_end].strip()
+
+    try:
+        data = json.loads(json_text)
+    except Exception as e:
+        return {
+            "created": 0,
+            "checked": 0,
+            "skipped_existing": 0,
+            "skipped_invalid": 0,
+            "source": "craigslist",
+            "max_price": max_price,
+            "limit": limit,
+            "scan_url": url,
+            "error": f"JSON parse failed: {str(e)}",
+            "status_code": res.status_code,
+            "json_preview": json_text[:500],
+        }
+
+    items = data.get("itemListElement", [])
+    if not items:
+        return {
+            "created": 0,
+            "checked": 0,
+            "skipped_existing": 0,
+            "skipped_invalid": 0,
+            "source": "craigslist",
+            "max_price": max_price,
+            "limit": limit,
+            "scan_url": url,
+            "error": "No items in JSON",
+            "status_code": res.status_code,
+            "json_preview": json_text[:500],
         }
 
     created = 0
@@ -97,32 +129,23 @@ def run_scan(
     skipped_existing = 0
     skipped_invalid = 0
 
-    for row in rows[:limit]:
+    for item in items[:limit]:
         checked += 1
 
-        title_el = row.select_one(".result-title")
-        if not title_el:
-            title_el = row.select_one(".cl-app-anchor")
+        listing_data = item.get("item", {})
+        title = listing_data.get("name", "")
+        link = listing_data.get("url", "")
 
-        price_el = row.select_one(".result-price")
-        if not price_el:
-            price_el = row.select_one(".priceinfo")
+        offers = listing_data.get("offers", {})
+        price = offers.get("price")
 
-        if not title_el or not price_el:
-            skipped_invalid += 1
-            continue
-
-        title = title_el.get_text(strip=True)
-        raw_price = price_el.get_text(strip=True)
-        link = title_el.get("href", "").strip()
-
-        if not title or not raw_price or not link:
+        if not title or not link or price is None:
             skipped_invalid += 1
             continue
 
         try:
-            price = int(raw_price.replace("$", "").replace(",", "").strip())
-        except ValueError:
+            price = int(float(price))
+        except (ValueError, TypeError):
             skipped_invalid += 1
             continue
 
