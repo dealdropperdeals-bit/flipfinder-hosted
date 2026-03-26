@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime
-import random
+import requests
+from bs4 import BeautifulSoup
 
 from ..db import get_db
 from ..models import Listing
@@ -12,52 +13,57 @@ router = APIRouter(prefix="/scan", tags=["scan"])
 
 @router.post("")
 def run_scan(db: Session = Depends(get_db)):
+    url = "https://orlando.craigslist.org/search/cta?max_price=6000"
+
+    res = requests.get(url)
+    soup = BeautifulSoup(res.text, "html.parser")
+
+    rows = soup.select(".result-row")
+
     created = 0
 
-    sample_titles = [
-        "2012 Honda Accord LX",
-        "2015 Toyota Camry SE",
-        "2010 Ford Focus",
-        "2018 Nissan Altima",
-        "2013 Chevy Malibu"
-    ]
+    for row in rows[:20]:
+        title_el = row.select_one(".result-title")
+        price_el = row.select_one(".result-price")
 
-    for i in range(10):
-        title = random.choice(sample_titles)
-        price = random.randint(800, 6000)
-        year = random.randint(2008, 2018)
+        if not title_el or not price_el:
+            continue
+
+        title = title_el.text.strip()
+        price = int(price_el.text.replace("$", "").replace(",", ""))
+
+        link = title_el["href"]
 
         payload = {
             "title": title,
-            "description": "Runs good, clean title",
+            "description": "",
             "price": price,
-            "year": year,
-            "seller_name": "Private Seller",
+            "year": 0,
+            "seller_name": "",
             "location": "Orlando, FL"
         }
 
         junk_score, junk_flags = score_listing(payload)
 
-        # Prevent duplicates using source_id
-        source_id = f"demo-{title}-{price}-{i}"
+        source_id = link
 
-        exists = db.query(Listing).filter_by(source="demo", source_id=source_id).first()
+        exists = db.query(Listing).filter_by(source="craigslist", source_id=source_id).first()
         if exists:
             continue
 
         listing = Listing(
-            source="demo",
+            source="craigslist",
             source_id=source_id,
-            url="https://example.com",
+            url=link,
             title=title,
-            description=payload["description"],
+            description="",
             price=price,
-            location=payload["location"],
-            seller_name=payload["seller_name"],
+            location="Orlando, FL",
+            seller_name="",
             image_url=None,
             thumb_url=None,
-            year=year,
-            mileage=random.randint(80000, 180000),
+            year=None,
+            mileage=None,
             created_at=datetime.utcnow(),
             first_seen=datetime.utcnow(),
             last_seen=datetime.utcnow(),
