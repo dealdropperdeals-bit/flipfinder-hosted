@@ -30,27 +30,44 @@ def run_scan(
 ):
     url = f"https://orlando.craigslist.org/search/cta?sort=date&max_price={max_price}"
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/146.0.0.0 Safari/537.36"
-        )
-    }
+  headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Connection": "keep-alive",
+}  
+
 
     try:
-        res = requests.get(url, headers=headers, timeout=20)
-        res.raise_for_status()
-    except requests.RequestException as e:
-        return {
-            "created": 0,
-            "checked": 0,
-            "source": "craigslist",
-            "error": str(e),
-        }
+res = requests.get(url, headers=headers, timeout=20)
 
-    soup = BeautifulSoup(res.text, "html.parser")
-    rows = soup.select(".result-row")
+html = res.text
+
+# DEBUG: check if Craigslist blocked us
+if "captcha" in html.lower() or "blocked" in html.lower():
+    return {
+        "created": 0,
+        "checked": 0,
+        "error": "Blocked or captcha detected",
+        "preview": html[:500]
+    }
+
+soup = BeautifulSoup(html, "html.parser")
+
+# Try multiple selectors (Craigslist changes structure often)
+rows = soup.select("li.result-row")
+
+if not rows:
+    rows = soup.select("li.cl-search-result")
+
+# Debug fallback
+if not rows:
+    return {
+        "created": 0,
+        "checked": 0,
+        "error": "No rows found",
+        "html_preview": html[:500]
+    }
 
     created = 0
     checked = 0
