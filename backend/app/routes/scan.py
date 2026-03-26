@@ -108,7 +108,14 @@ def run_scan(
             "json_preview": json_text[:500],
         }
 
-    items = data.get("itemListElement", [])
+    raw_items = data.get("itemListElement", [])
+
+    items = []
+    for entry in raw_items:
+        item = entry.get("item")
+        if isinstance(item, dict) and item.get("url") and item.get("name"):
+            items.append(item)
+
     if not items:
         return {
             "created": 0,
@@ -129,15 +136,14 @@ def run_scan(
     skipped_existing = 0
     skipped_invalid = 0
 
-    for item in items[:limit]:
+    for listing_data in items[:limit]:
         checked += 1
 
-        listing_data = item.get("item", {})
         title = listing_data.get("name", "")
         link = listing_data.get("url", "")
 
         offers = listing_data.get("offers", {})
-        price = offers.get("price")
+        price = offers.get("price") if isinstance(offers, dict) else None
 
         if not title or not link or price is None:
             skipped_invalid += 1
@@ -212,4 +218,5 @@ def run_scan(
         "scan_url": url,
         "status_code": res.status_code,
         "html_length": len(html),
+        "parsed_items": len(items),
     }
