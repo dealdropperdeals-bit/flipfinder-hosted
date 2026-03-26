@@ -30,44 +30,67 @@ def run_scan(
 ):
     url = f"https://orlando.craigslist.org/search/cta?sort=date&max_price={max_price}"
 
-  headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Connection": "keep-alive",
-}  
-
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Connection": "keep-alive",
+    }
 
     try:
-res = requests.get(url, headers=headers, timeout=20)
+        res = requests.get(url, headers=headers, timeout=20)
+    except requests.RequestException as e:
+        return {
+            "created": 0,
+            "checked": 0,
+            "skipped_existing": 0,
+            "skipped_invalid": 0,
+            "source": "craigslist",
+            "max_price": max_price,
+            "limit": limit,
+            "scan_url": url,
+            "error": f"Request failed: {str(e)}",
+        }
 
-html = res.text
+    html = res.text
 
-# DEBUG: check if Craigslist blocked us
-if "captcha" in html.lower() or "blocked" in html.lower():
-    return {
-        "created": 0,
-        "checked": 0,
-        "error": "Blocked or captcha detected",
-        "preview": html[:500]
-    }
+    if "captcha" in html.lower() or "blocked" in html.lower():
+        return {
+            "created": 0,
+            "checked": 0,
+            "skipped_existing": 0,
+            "skipped_invalid": 0,
+            "source": "craigslist",
+            "max_price": max_price,
+            "limit": limit,
+            "scan_url": url,
+            "error": "Blocked or captcha detected",
+            "status_code": res.status_code,
+            "html_length": len(html),
+            "html_preview": html[:1000],
+        }
 
-soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
 
-# Try multiple selectors (Craigslist changes structure often)
-rows = soup.select("li.result-row")
+    rows = soup.select("li.result-row")
+    if not rows:
+        rows = soup.select("li.cl-search-result")
 
-if not rows:
-    rows = soup.select("li.cl-search-result")
-
-# Debug fallback
-if not rows:
-    return {
-        "created": 0,
-        "checked": 0,
-        "error": "No rows found",
-        "html_preview": html[:500]
-    }
+    if not rows:
+        return {
+            "created": 0,
+            "checked": 0,
+            "skipped_existing": 0,
+            "skipped_invalid": 0,
+            "source": "craigslist",
+            "max_price": max_price,
+            "limit": limit,
+            "scan_url": url,
+            "error": "No rows found",
+            "status_code": res.status_code,
+            "html_length": len(html),
+            "html_preview": html[:1000],
+        }
 
     created = 0
     checked = 0
@@ -78,7 +101,12 @@ if not rows:
         checked += 1
 
         title_el = row.select_one(".result-title")
+        if not title_el:
+            title_el = row.select_one(".cl-app-anchor")
+
         price_el = row.select_one(".result-price")
+        if not price_el:
+            price_el = row.select_one(".priceinfo")
 
         if not title_el or not price_el:
             skipped_invalid += 1
@@ -122,6 +150,8 @@ if not rows:
             skipped_existing += 1
             continue
 
+        now = datetime.utcnow()
+
         listing = Listing(
             source="craigslist",
             source_id=source_id,
@@ -135,9 +165,9 @@ if not rows:
             thumb_url=None,
             year=year,
             mileage=None,
-            created_at=datetime.utcnow(),
-            first_seen=datetime.utcnow(),
-            last_seen=datetime.utcnow(),
+            created_at=now,
+            first_seen=now,
+            last_seen=now,
             is_stale=False,
             junk_score=junk_score,
             junk_flags=junk_flags,
@@ -157,4 +187,6 @@ if not rows:
         "max_price": max_price,
         "limit": limit,
         "scan_url": url,
+        "status_code": res.status_code,
+        "html_length": len(html),
     }
